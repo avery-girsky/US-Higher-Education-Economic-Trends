@@ -1,0 +1,1180 @@
+---
+title: "Project Data Cleaning"
+author: "James Peavy"
+date: "2023-10-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width = 16, fig.height = 8)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r importing libraries}
+library(lubridate)
+library(mgcv)
+library(tseries)
+library(zoo)
+library(readxl)
+library(dplyr)
+library(lubridate)
+library(TSA)
+library(car)
+library(dynlm)
+library(car)
+library(mlr)
+library(rugarch)
+library(vars)
+```
+
+## Including Plots
+
+## Exogeneous Variables Cleaning/Plotting
+
+```{r inflation data cleaning}
+Inflation = read_excel("Inflation Data.xlsx", sheet='Data')
+Inflation
+US.Inflation = Inflation[Inflation$`Country Name` == 'United States',]
+US.Inflation = dplyr::select(US.Inflation,-c(`Country Name`,`Country Code`, `Indicator Name`, `Indicator Code`))
+US.Inflation = as.data.frame(t(US.Inflation))
+Year = row.names(US.Inflation)
+Inflation.Rate.As.Decimal = 1+US.Inflation$V1/100
+US.Inflation.df = data.frame(Year, Inflation.Rate.As.Decimal)
+US.Inflation.df$Year = as.Date(US.Inflation.df$Year, format='%Y')
+
+reverse.cum.rate <- function(df, old.col, new.col){
+  temp.vect = c()
+  for (i in 0:(nrow(df)-1)) {
+    temp.vect = c(temp.vect, prod(tail(old.col, nrow(df)-i)))
+  }
+  return(temp.vect)
+}
+
+US.Inflation.df$Year.to.2015.rate = reverse.cum.rate(df = US.Inflation.df, old.col=US.Inflation.df$Inflation.Rate.As.Decimal)
+US.Inflation.df # a dollar amount measured in 1960 dollars times 1960 inflation rate gives us dollar amount measured in 1961 dollars (so 1960 to 2015 dollars is 1960 dollars * 1+inflation rate up to 2014's inflation rate)
+```
+
+```{r raw inflation rate by year}
+plot(y=US.Inflation.df$Inflation.Rate.As.Decimal, x=US.Inflation.df$Year, ylab='Inflation Rate', xlab='Year', main='Inflation Rate', type="b", col='red', lwd=2)
+```
+
+
+
+
+```{r GDP data cleaning}
+GDP.Growth = read_excel("GDP growth (%).xlsx", sheet='Data')
+GDP.Growth = GDP.Growth[GDP.Growth$`Country Name` == 'United States',]
+GDP.Growth = dplyr::select(GDP.Growth,-c(`Country Name`,`Country Code`, `Indicator Name`, `Indicator Code`, `1960`))
+GDP.Growth = as.data.frame(t(GDP.Growth))
+Year = row.names(GDP.Growth)
+GDP.Growth.As.Decimal = 1+GDP.Growth$V1/100
+GDP.Growth.df = data.frame(Year, GDP.Growth.As.Decimal)
+GDP.Growth.df$Year = as.Date(GDP.Growth.df$Year, format='%Y') # Gets us the GDP growth rates from 1961 to 2022
+```
+
+```{r raw GDP change by year}
+plot(y=GDP.Growth.df$GDP.Growth.As.Decimal, x=GDP.Growth.df$Year, ylab='GDP Growth Rate', xlab='Year', main='GDP Growth Rate', type="b", col='red', lwd=2)
+```
+
+
+
+
+```{r college graduation & population data cleaning}
+# Population Statistics
+population = read_excel("population-of-the-united-states-1610-2020.xlsx", sheet='Data')
+population.df = as.data.frame(population)
+population.df = dplyr::select(population.df,-c(`Past Borders`))
+population.df$Year = as.Date(as.character(population.df$Year), format='%Y')
+names(population.df)[names(population.df) == "Present Borders"] <- "Population"
+population.df$Population = as.numeric(population.df$Population)
+
+#population.df = head(population.df, -(2020-2015)) # Gets us the data from 1958 to 2015
+population.df = tail(population.df, (2020-1959)) # Gets us the data from 1960 to 2020 (no data on 21, 22, or 23)
+population.df$Population<-population.df$Population*1000
+
+# Education Statistics
+education = read_excel("educational-attainment-in-the-us-1960-2022.xlsx", sheet='Data')
+education.df = as.data.frame(education)
+education.df = dplyr::select(education.df,-c(`High school graduate or more`))
+education.df$Year = as.Date(as.character(education.df$Year), format='%Y')
+names(education.df)[names(education.df) == "College graduate or more"] <- "College Grads"
+education.df$`College Grads` = as.numeric(education.df$`College Grads`)
+
+#education.df = head(education.df, -(2022-2020)) # Gets us the data from 1960 to 2020
+education.df$`College Grads`<-education.df$`College Grads`*0.01
+#education.df
+```
+
+```{r Population, Education, and Educated Population}
+plot(y=population.df$Population, x=population.df$Year, ylab='Total Population', xlab='Year', main='Total Population', type="b", col='red', lwd=2)
+plot(y=education.df$`College Grads`, x=education.df$Year, ylab='College Grads out of Total Population', xlab='Year', main='College Grads as Total % of Population (Decimal)', type="b", col='red', lwd=2)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## Endogenous Variables Cleaning/Plotting/Modeling
+
+```{r salary data cleaning}
+Starting.Salary = read_excel("Adjusted Average Salaries for Bachelors Degree Graduates 1960-2015.xlsx")
+Starting.Salary = dplyr::select(Starting.Salary,-c(`PERCENT CHANGE...3`,`PERCENT CHANGE...5`, `ADJUSTED AVERAGE`))
+Starting.Salary.df = as.data.frame(Starting.Salary)
+Starting.Salary.df$YEAR = as.Date(as.character(Starting.Salary.df$YEAR), format='%Y')
+#Starting.Salary.df$Adjusted.Average = Starting.Salary.df$`REPORTED AVERAGE`*c(US.Inflation.df$Year.to.2015.rate, 1) # Adjust for inflation
+names(Starting.Salary.df)[names(Starting.Salary.df) == "YEAR"] <- "Year"
+names(Starting.Salary.df)[names(Starting.Salary.df) == "REPORTED AVERAGE"] <- "Reported.Average"
+#Starting.Salary.df
+```
+
+```{r starting salary visualized}
+plot(y=Starting.Salary.df$Reported.Average, x=Starting.Salary.df$Year, ylab='Salary', xlab='Year', main='Reported Average Bachlor Degree Starting Salary', type="b", col='blue', lwd=2)
+```
+
+
+```{r average starting salary data TS model Splines}
+# SPLINES MODELING with LOG
+Starting.Stalary.ts = ts(log(Starting.Salary.df$Reported.Average), start = 1960)
+ts.plot(Starting.Stalary.ts, main='Log Average Starting Salary Data', ylab='Salary')
+acf(Starting.Stalary.ts, lag=60, main='ACF of Log Average Starting Salary Data')
+
+time.pts = c(1:length(Starting.Stalary.ts))
+time.pts = c(time.pts - min(time.pts))/max(time.pts)
+
+starting.salary.splines = gam(Starting.Stalary.ts~s(time.pts))
+summary(starting.salary.splines)
+starting.salary.splines.fit = fitted(starting.salary.splines)
+starting.salary.splines.fit = ts(starting.salary.splines.fit, start = 1960)
+
+ts.plot(Starting.Stalary.ts, main='Log Average Starting Salary Data', ylab='Salary')
+lines(starting.salary.splines.fit, lwd=2,col='seagreen')
+starting.salary.splines.diff = ts((Starting.Stalary.ts-starting.salary.splines.fit), start = 1960)
+
+ts.plot(starting.salary.splines.diff, main='Log Average Starting Salary Residuals', ylab='Salary')
+acf(starting.salary.splines.diff, lag=60, main='ACF of Log Average Starting Salary Residuals (Trend Removal)')
+pacf(starting.salary.splines.diff, lag=60, main='PACF of Log Average Starting Salary Residuals (Trend Removal)')
+```
+
+```{r average starting salary data TS model Seasonality}
+# SEASONAL MODELING with LOG
+starting.salary.splines.diff = ts(starting.salary.splines.diff, frequency=10, start = 1960)
+starting.salary.splines.diff.season.model = lm(starting.salary.splines.diff~season(starting.salary.splines.diff))
+summary(starting.salary.splines.diff.season.model)
+starting.salary.splines.diff.season.model.fit = fitted(starting.salary.splines.diff.season.model)
+starting.salary.splines.diff.season.model.fit = ts(starting.salary.splines.diff.season.model.fit, start = 1960, frequency=10)
+
+ts.plot(starting.salary.splines.diff, main='Log Average Starting Salary Residuals (Trend Removal)', ylab='Salary')
+lines(starting.salary.splines.diff.season.model.fit, lwd=2,col='seagreen')
+#starting.salary.splines.diff
+#starting.salary.splines.diff.season.model.fit
+starting.salary.splines.diff.season.model.fit.diff = ts((starting.salary.splines.diff-starting.salary.splines.diff.season.model.fit), start = 1960)
+
+ts.plot(starting.salary.splines.diff.season.model.fit.diff, main='Log Average Starting Salary Residuals (Trend and Seasonality Removal)', ylab='Salary')
+acf(starting.salary.splines.diff.season.model.fit.diff, lag=60, main='ACF of Residuals (Trend and Seasonality Removal)')
+pacf(starting.salary.splines.diff.season.model.fit.diff, lag=60, main='PACF of Residuals (Trend and Seasonality Removal)')
+
+# SQUARED RESIDUAL ANALYSIS FOR HETEROSKEDASTICITY
+starting.salary.final.residuals = starting.salary.splines.diff.season.model.fit.diff
+acf(starting.salary.final.residuals^2, lag=60, main='ACF of Squared Residuals (Trend and Seasonality Removal)')
+```
+
+```{r average starting salary data TS model ARIMA selection}
+#starting.salary.final.residuals
+
+n = length(starting.salary.final.residuals)
+max.order = 10
+p = c(1:max.order)-1
+q = c(1:max.order)-1
+aic.matrix = matrix(0,max.order,max.order)
+for (i in 1:max.order){
+  for (j in 1:max.order){
+    ARMA.model.ij = arima(starting.salary.final.residuals, order=c(p[i],0,q[j]), include.mean = FALSE, method='ML')
+    aic.matrix[i,j] = ARMA.model.ij$aic-2*(p[i]+q[j]+1)+2*(p[i]+q[j]+1)*n/(n-p[i]-q[j]-2)
+  }
+}
+aic.matrix
+which(aic.matrix == min(aic.matrix), arr.ind = TRUE)
+p.opt = which(aic.matrix == min(aic.matrix), arr.ind = TRUE)[1]
+q.opt = which(aic.matrix == min(aic.matrix), arr.ind = TRUE)[2]
+min.aic = aic.matrix[p.opt,q.opt]
+sprintf("The chosen model is of order p= %f, q= %f, and has an AICc value of %f.", p.opt, q.opt, min.aic)
+```
+
+```{r average starting salary data TS model ARIMA model testing}
+starting.salary.final.residuals.ARMA = arima(starting.salary.final.residuals, order=c(3,0,2), include.mean = FALSE, method='ML')
+starting.salary.final.ARMA.residuals = starting.salary.final.residuals.ARMA$residuals
+plot(starting.salary.final.ARMA.residuals, type='l', main='Residuals of Differenced Daily Model ARMA')
+acf(starting.salary.final.ARMA.residuals, lag=60)
+pacf(starting.salary.final.ARMA.residuals, lag=60)
+qqPlot(starting.salary.final.ARMA.residuals, ylab="Sample Q", xlab="Theoretical Q")
+
+roots = polyroot(c(1,(-starting.salary.final.residuals.ARMA$ar)))
+
+adf.test(starting.salary.final.ARMA.residuals) # Null Hypothesis = There is a unit root (the time series is non stationary)
+Box.test(starting.salary.final.ARMA.residuals, lag = (6), type = "Box-Pierce", fitdf = (5)) # Null Hypothesis = There is no Serial Correlation
+Box.test(starting.salary.final.ARMA.residuals, lag = (6), type = "Ljung-Box", fitdf = (5)) # Null Hypothesis = There is no Serial Correlation
+shapiro.test(starting.salary.final.ARMA.residuals) # Null Hypothesis = The data is normally distributed
+
+acf(starting.salary.final.ARMA.residuals^2,lag=60)
+
+Box.test(starting.salary.final.ARMA.residuals**2, lag = (6), type = "Box-Pierce", fitdf = (5)) # Null Hypothesis = There is no Serial Correlation
+Box.test(starting.salary.final.ARMA.residuals**2, lag = (6), type = "Ljung-Box", fitdf = (5)) # Null Hypothesis = There is no Serial Correlation
+
+# Fit
+plot(starting.salary.final.ARMA.residuals+starting.salary.final.residuals+ts(log(Starting.Salary.df$Reported.Average), start = 1960), xlab="Year", ylab="Log Starting Salary", main="Estimated Log Starting Salary: Splines, Seasonality and ARMA(3,2)", type='l', col="red")
+lines(ts(log(Starting.Salary.df$Reported.Average), start = 1960), col="black", lty=3)
+legend(x = "bottomright", legend = c("Log Starting Salary", "Estimated Log Starting Salary"), fill=c("black", "red"))
+```
+
+```{r Starting Salary TS model ARIMA-GARCH selection 1}
+# Fit using ARMA(3,2)
+final.aic = Inf
+final.order = c(0,0,0)
+
+for (m in 0:3){
+  for (n in 0:3){
+    tryCatch({
+      if (m+n > 0){
+        spec = ugarchspec(variance.model=list(garchOrder=c(m,n)),
+                                   mean.model=list(armaOrder=c(3,2),
+                                                   include.mean=F),
+                                   distribution.model="std")
+        fit = ugarchfit(spec, starting.salary.final.residuals, solver = 'hybrid')
+        current.aic = infocriteria(fit)[1]
+        print(c(m, 0, n, current.aic))
+      }
+      if (current.aic < final.aic) {
+        final.aic = current.aic
+        final.order = c(m, 0, n, final.aic)
+        }
+      }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  }
+}
+print('-----Final values-----')
+print(final.order)
+```
+
+```{r Starting Salary TS model ARIMA-GARCH selection 2}
+# Fit using GARCH(1,0)
+final.aic = Inf
+final.order = c(0,0,0)
+
+for (p in 0:7){
+  for (q in 0:7){
+    tryCatch({
+      spec = ugarchspec(variance.model=list(garchOrder=c(1,0)),
+                                 mean.model=list(armaOrder=c(p,q),
+                                                 include.mean=F),
+                                 distribution.model="std")
+      fit = ugarchfit(spec, starting.salary.final.residuals, solver = 'hybrid')
+      current.aic = infocriteria(fit)[1]
+      print(c(p, 0, q, current.aic))
+      if (current.aic < final.aic) {
+        final.aic = current.aic
+        final.order = c(p, 0, q, final.aic)
+        }
+      }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  }
+}
+print('-----Final values-----')
+print(final.order)
+```
+
+```{r Starting Salary TS model ARIMA-GARCH selection 3}
+# Fit using ARMA(5,5)
+final.aic = Inf
+final.order = c(0,0,0)
+
+for (m in 0:3){
+  for (n in 0:3){
+    tryCatch({
+      if (m+n > 0){
+        spec = ugarchspec(variance.model=list(garchOrder=c(m,n)),
+                                   mean.model=list(armaOrder=c(5,5),
+                                                   include.mean=F),
+                                   distribution.model="std")
+        fit = ugarchfit(spec, starting.salary.final.residuals, solver = 'hybrid')
+        current.aic = infocriteria(fit)[1]
+        print(c(m, 0, n, current.aic))
+      }
+      if (current.aic < final.aic) {
+        final.aic = current.aic
+        final.order = c(m, 0, n, final.aic)
+        }
+      }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  }
+}
+print('-----Final values-----')
+print(final.order)
+```
+
+```{r Starting Salary TS model ARIMA-GARCH selection 4}
+# Best: ARMA(5,5)-GARCH(1,0)
+
+spec = ugarchspec(variance.model=list(garchOrder=c(1,0)),
+                                   mean.model=list(armaOrder=c(5,5),
+                                                   include.mean=F),
+                                   distribution.model="std")
+arma.garch.fit = ugarchfit(spec, starting.salary.final.residuals, solver = 'hybrid')
+```
+
+```{r Starting Salary TS model ARIMA-GARCH model testing}
+arma.garch.fit.resid = arma.garch.fit@fit$residuals # normal residuals
+arma.garch.fit.resid.std = arma.garch.fit@fit$z # standardized residuals
+
+plot(arma.garch.fit.resid, ylab="Residual Cost", main="ACF of ARIMA-GARCH Residuals", xlab="Year", type='l')
+acf(arma.garch.fit.resid, main="ACF of ARIMA-GARCH Residuals", lag.max=60)
+pacf(arma.garch.fit.resid, main="PACF of ARIMA-GARCH Residuals", lag.max=60)
+
+adf.test(arma.garch.fit.resid.std) # Null Hypothesis = There is a unit root (the time series is non stationary)
+Box.test(arma.garch.fit.resid.std, lag = (11), type = "Box-Pierce", fitdf = (10)) # Null Hypothesis = There is no Serial Correlation
+Box.test(arma.garch.fit.resid.std, lag = (11), type = "Ljung-Box", fitdf = (10)) # Null Hypothesis = There is no Serial Correlation
+shapiro.test(arma.garch.fit.resid.std) # Null Hypothesis = The data is normally distributed
+
+qqPlot(arma.garch.fit.resid.std, ylab="Residual Log Starting Salary", main="QQ Plot ARMA-GARCH Residuals", distribution = "t", df = 10)
+acf(arma.garch.fit.resid**2, main = "Squared Residuals of Selected ARMA-GARCH", lag.max=60)
+
+# Fit
+plot(arma.garch.fit.resid+starting.salary.final.residuals+ts(log(Starting.Salary.df$Reported.Average), start = 1960), xlab="Year", ylab="Log Starting Salary", main="Estimated Log Starting Salary: Splines and ARMA(5,5) - GARCH(1,0)", type='l', col="red")
+lines(ts(log(Starting.Salary.df$Reported.Average), start = 1960), col="black", lty=3)
+legend(x = "bottomright", legend = c("Log Starting Salary", "Estimated Log Starting Salary"), fill=c("black", "red"))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r loan data cleaning}
+Loans = read_excel("loan_combined.xlsx")
+Loans.df = as.data.frame(Loans)
+#Loans.df = head(Loans.df, -(2020-2015)) # Gets us the loan data from 1958 to 2015
+#Loans.df = tail(Loans.df, (2015-1959)) # Gets us the loan data from 1960 to 2015
+Loans.df$year = as.Date(as.character(Loans.df$year), format='%Y')
+
+#Loans.df$under30 = Loans.df$under30*c(US.Inflation.df$Year.to.2015.rate, 1) # Adjust for inflation
+#Loans.df$`30_39` = Loans.df$`30_39`*c(US.Inflation.df$Year.to.2015.rate, 1) # Adjust for inflation
+#Loans.df$`40_49` = Loans.df$`40_49`*c(US.Inflation.df$Year.to.2015.rate, 1) # Adjust for inflation
+#Loans.df$`50_59` = Loans.df$`50_59`*c(US.Inflation.df$Year.to.2015.rate, 1) # Adjust for inflation
+#Loans.df$`60+` = Loans.df$`60+`*c(US.Inflation.df$Year.to.2015.rate, 1) # Adjust for inflation
+#Loans.df$total = Loans.df$total*c(US.Inflation.df$Year.to.2015.rate, 1) # Adjust for inflation
+
+Total.Loans = Loans.df[c('year', 'total')]
+Loans.20s = Loans.df[c('year', 'under30')]
+Loans.30s = Loans.df[c('year', '30_39')]
+Loans.40s = Loans.df[c('year', '40_49')]
+Loans.50s = Loans.df[c('year', '50_59')]
+Loans.60s = Loans.df[c('year', '60+')]
+```
+
+```{r loan data visualized}
+plot(y=Total.Loans$total, x=Total.Loans$year, ylab='Loans Debt in Billions', xlab='Year', main='Total Loan Debt', type="b", col='blue', lwd=2)
+plot(y=Loans.df$under30, x=Loans.20s$year, ylab='Loans Debt in Billions', xlab='Year', main='Under 30s Loan Debt', type="b", col='blue', lwd=2)
+plot(y=Loans.df$`30_39`, x=Loans.30s$year, ylab='Loans Debt in Billions', xlab='Year', main='30-39 Loan Debt', type="b", col='blue', lwd=2)
+plot(y=Loans.df$`40_49`, x=Loans.40s$year, ylab='Loans Debt in Billions', xlab='Year', main='40-49 Loan Debt', type="b", col='blue', lwd=2)
+plot(y=Loans.df$`50_59`, x=Loans.50s$year, ylab='Loans Debt in Billions', xlab='Year', main='50-59 Loan Debt', type="b", col='blue', lwd=2)
+plot(y=Loans.df$`60+`, x=Loans.60s$year, ylab='Loans Debt in Billions', xlab='Year', main='60+ Loan Debt', type="b", col='blue', lwd=2)
+```
+
+
+```{r total loan data TS model Splines}
+# SPLINES MODELING with LOG
+Total.Loans.ts = ts(log(Total.Loans$total), start = 1958)
+ts.plot(Total.Loans.ts, main='Log Total Loan Data')
+acf(Total.Loans.ts, lag=60)
+
+time.pts = c(1:length(Total.Loans.ts))
+time.pts = c(time.pts - min(time.pts))/max(time.pts)
+
+total.loans.splines = gam(Total.Loans.ts~s(time.pts))
+summary(total.loans.splines)
+total.loans.splines.fit = fitted(total.loans.splines)
+total.loans.splines.fit = ts(total.loans.splines.fit, start = 1958)
+
+ts.plot(Total.Loans.ts, main='Log Total Loans Salary Data', ylab='Salary')
+lines(total.loans.splines.fit, lwd=2,col='seagreen')
+total.loans.splines.diff = ts((Total.Loans.ts-total.loans.splines.fit), start = 1958)
+
+ts.plot(total.loans.splines.diff, main='Log Total Loan Diff')
+acf(total.loans.splines.diff, lag=60)
+pacf(total.loans.splines.diff, lag=60)
+```
+
+```{r total loan data TS model ARIMA selection}
+#total.loans.Splines.Diff
+
+n = length(total.loans.splines.diff)
+max.order = 10
+p = c(1:max.order)-1
+q = c(1:max.order)-1
+aic.matrix = matrix(0,max.order,max.order)
+for (i in 1:max.order){
+  for (j in 1:max.order){
+    ARMA.model.ij = arima(total.loans.splines.diff, order=c(p[i],0,q[j]), include.mean = FALSE, method='ML')
+    aic.matrix[i,j] = ARMA.model.ij$aic-2*(p[i]+q[j]+1)+2*(p[i]+q[j]+1)*n/(n-p[i]-q[j]-2)
+  }
+}
+aic.matrix
+which(aic.matrix == min(aic.matrix), arr.ind = TRUE)
+p.opt = which(aic.matrix == min(aic.matrix), arr.ind = TRUE)[1]
+q.opt = which(aic.matrix == min(aic.matrix), arr.ind = TRUE)[2]
+min.aic = aic.matrix[p.opt,q.opt]
+sprintf("The chosen model is of order p= %f, q= %f, and has an AICc value of %f.", p.opt, q.opt, min.aic)
+```
+
+```{r total loans TS model ARIMA model testing}
+total.loans.final.residuals.ARMA = arima(total.loans.splines.diff, order=c(3,0,3), include.mean = FALSE, method='ML')
+total.loans.final.ARMA.residuals = total.loans.final.residuals.ARMA$residuals
+plot(total.loans.final.ARMA.residuals, type='l', main='Residuals of Differenced Total Loan Model ARMA')
+acf(total.loans.final.ARMA.residuals, lag=60, main='ACF of Residuals of Differenced Total Loan Model ARMA')
+pacf(total.loans.final.ARMA.residuals, lag=60, main='PACF of Residuals of Differenced Total Loan Model ARMA')
+qqPlot(total.loans.final.ARMA.residuals, ylab="Sample Q", xlab="Theoretical Q", main="QQ Plot ARIMA Residuals")
+
+roots = polyroot(c(1,(-total.loans.final.residuals.ARMA$ar)))
+
+adf.test(total.loans.final.ARMA.residuals) # Null Hypothesis = There is a unit root (the time series is non stationary)
+Box.test(total.loans.final.ARMA.residuals, lag = (7), type = "Box-Pierce", fitdf = (6)) # Null Hypothesis = There is no Serial Correlation
+Box.test(total.loans.final.ARMA.residuals, lag = (7), type = "Ljung-Box", fitdf = (6)) # Null Hypothesis = There is no Serial Correlation
+shapiro.test(total.loans.final.ARMA.residuals) # Null Hypothesis = The data is normally distributed
+
+acf(total.loans.final.ARMA.residuals^2,lag=60)
+
+Box.test(total.loans.final.ARMA.residuals**2, lag = (7), type = "Box-Pierce", fitdf = (6)) # Null Hypothesis = There is no Serial Correlation
+Box.test(total.loans.final.ARMA.residuals**2, lag = (7), type = "Ljung-Box", fitdf = (6)) # Null Hypothesis = There is no Serial Correlation
+```
+
+```{r total loans TS model ARIMA-GARCH selection 1}
+# Fit using ARMA(3,3)
+final.aic = Inf
+final.order = c(0,0,0)
+
+for (m in 0:3){
+  for (n in 0:3){
+    tryCatch({
+      if (m+n > 0){
+        spec = ugarchspec(variance.model=list(garchOrder=c(m,n)),
+                                   mean.model=list(armaOrder=c(3,3),
+                                                   include.mean=F),
+                                   distribution.model="std")
+        fit = ugarchfit(spec, total.loans.splines.diff, solver = 'hybrid')
+        current.aic = infocriteria(fit)[1]
+        print(c(m, 0, n, current.aic))
+      }
+      if (current.aic < final.aic) {
+        final.aic = current.aic
+        final.order = c(m, 0, n, final.aic)
+        }
+      }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  }
+}
+print('-----Final values-----')
+print(final.order)
+```
+
+```{r total loans TS model ARIMA-GARCH selection 2}
+# Fit using GARCH(1,3)
+final.aic = Inf
+final.order = c(0,0,0)
+
+for (p in 0:7){
+  for (q in 0:7){
+    tryCatch({
+      spec = ugarchspec(variance.model=list(garchOrder=c(1,3)),
+                                 mean.model=list(armaOrder=c(p,q),
+                                                 include.mean=F),
+                                 distribution.model="std")
+      fit = ugarchfit(spec, total.loans.splines.diff, solver = 'hybrid')
+      current.aic = infocriteria(fit)[1]
+      print(c(p, 0, q, current.aic))
+      if (current.aic < final.aic) {
+        final.aic = current.aic
+        final.order = c(p, 0, q, final.aic)
+        }
+      }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  }
+}
+print('-----Final values-----')
+print(final.order)
+```
+
+```{r total loans TS model ARIMA-GARCH selection 3}
+# Fit using ARMA(7,7)
+final.aic = Inf
+final.order = c(0,0,0)
+
+for (m in 0:3){
+  for (n in 0:3){
+    tryCatch({
+      if (m+n > 0){
+        spec = ugarchspec(variance.model=list(garchOrder=c(m,n)),
+                                   mean.model=list(armaOrder=c(7,7),
+                                                   include.mean=F),
+                                   distribution.model="std")
+        fit = ugarchfit(spec, total.loans.splines.diff, solver = 'hybrid')
+        current.aic = infocriteria(fit)[1]
+        print(c(m, 0, n, current.aic))
+      }
+      if (current.aic < final.aic) {
+        final.aic = current.aic
+        final.order = c(m, 0, n, final.aic)
+        }
+      }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  }
+}
+print('-----Final values-----')
+print(final.order)
+```
+
+```{r total loans TS model ARIMA-GARCH selection 4}
+# Fit using GARCH(1,1)
+final.aic = Inf
+final.order = c(0,0,0)
+
+for (p in 0:7){
+  for (q in 0:7){
+    tryCatch({
+      spec = ugarchspec(variance.model=list(garchOrder=c(1,1)),
+                                 mean.model=list(armaOrder=c(p,q),
+                                                 include.mean=F),
+                                 distribution.model="std")
+      fit = ugarchfit(spec, total.loans.splines.diff, solver = 'hybrid')
+      current.aic = infocriteria(fit)[1]
+      print(c(p, 0, q, current.aic))
+      if (current.aic < final.aic) {
+        final.aic = current.aic
+        final.order = c(p, 0, q, final.aic)
+        }
+      }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  }
+}
+print('-----Final values-----')
+print(final.order)
+```
+
+```{r total loans TS model ARIMA-GARCH selection 5}
+# Best: ARMA(7,7)-GARCH(1,1)
+
+spec = ugarchspec(variance.model=list(garchOrder=c(1,1)),
+                                   mean.model=list(armaOrder=c(7,7),
+                                                   include.mean=F),
+                                   distribution.model="std")
+arma.garch.fit = ugarchfit(spec, total.loans.splines.diff, solver = 'hybrid')
+```
+
+```{r total loans TS model ARIMA-GARCH model testing}
+arma.garch.fit.resid = arma.garch.fit@fit$residuals # normal residuals
+arma.garch.fit.resid.std = arma.garch.fit@fit$z # standardized residuals
+
+plot(arma.garch.fit.resid, ylab="Residual Cost", main="ACF of ARIMA-GARCH Residuals", xlab="Year", type='l')
+acf(arma.garch.fit.resid, main="ACF of ARIMA-GARCH Residuals", lag.max=60)
+pacf(arma.garch.fit.resid, main="PACF of ARIMA-GARCH Residuals", lag.max=60)
+
+adf.test(arma.garch.fit.resid.std) # Null Hypothesis = There is a unit root (the time series is non stationary)
+Box.test(arma.garch.fit.resid.std, lag = (15), type = "Box-Pierce", fitdf = (14)) # Null Hypothesis = There is no Serial Correlation
+Box.test(arma.garch.fit.resid.std, lag = (15), type = "Ljung-Box", fitdf = (14)) # Null Hypothesis = There is no Serial Correlation
+shapiro.test(arma.garch.fit.resid.std) # Null Hypothesis = The data is normally distributed
+
+qqPlot(arma.garch.fit.resid.std, ylab="Residual Cost", main="QQ Plot ARMA-GARCH Residuals", distribution = "t", df = 14)
+acf(arma.garch.fit.resid**2, main = "Squared Residuals of Selected ARMA-GARCH", lag.max=60)
+
+# Fit
+plot(arma.garch.fit.resid+total.loans.splines.diff+ts(log(Total.Loans$total), start=1958), xlab="Year", ylab="Log Total Loans", main="Estimated Total Loans: Splines and ARMA(0,7) - GARCH(0,1)", type='l', col="red")
+lines(ts(log(Total.Loans$total), start=1958), col="black", lty=3)
+legend(x = "bottomright", legend = c("Log Total Loans", "Estimated Log Total Loans"), fill=c("black", "red"))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r Tuition data cleaning}
+data = read_excel("college_cost_data.xlsx", sheet="DataFrame")
+
+inst = "All"      # institution options:    All, Public, Private, Private/Non-Profit, Private/For-Profit
+adj = "current"  # adjustment options:     constant (inflation adjusted), current (at-time cost)
+type = "total"    # type of cost options:   total, tuition+fees, room, board
+len = "all"       # program length options: all, 4yr, 2yr
+args = c(inst, adj, type, len)
+data$Year = substr(data$Year, 1, 4)
+
+get_ts = function(args) {
+  col = paste(args, collapse=", ")
+  return(ts(data[,col], start=1968, frequency=10))
+}
+
+cost = get_ts(args)
+```
+
+```{r Tuition cost (room and board included) visualized}
+ts.plot(ts(cost, start=1968), xlab="Year", ylab="Cost", main="Tuition Time Series")
+```
+
+```{r Tuition data TS model Splines}
+# SPLINES + 10 period Seasonality MODELING
+ts.plot(ts(cost, start=1968), xlab="Year", ylab="Cost", main="Tuition Time Series")
+acf(ts(cost, start=1968), lag.max=54, main="ACF of Tuition Time Series")
+
+time.pts = c(1:length(cost))
+time.pts = c(time.pts - min(time.pts))/max(time.pts)
+
+tuition.spl = gam(cost~s(time.pts)+season(cost))
+tuition.spl_fit = ts(fitted(tuition.spl), start=1968, frequency=10)
+tuition.spl_resi = cost - tuition.spl_fit
+tuition.spl_resi = ts(tuition.spl_resi, start=1968)
+
+summary(tuition.spl)
+
+ts.plot(cost, main="Splines Fit to Tuition Time Series", ylab="Cost", xlab="Year")
+lines(tuition.spl_fit, col="red")
+legend(x = "bottomright", legend = c("Time Series", "Splines Fit"), fill=c("black", "red"))
+
+ts.plot(tuition.spl_resi, main="Tuition Splines Residual Plot", ylab="Residual Cost", xlab="Year")
+acf(tuition.spl_resi, lag.max=54, main="ACF of Tuition Splines Residuals")
+pacf(tuition.spl_resi, lag.max=54, main="PACF of Tuition Splines Residuals")
+```
+
+```{r Tuition data TS model Splines testing}
+adf.test(cost)
+#adf.test(diff_cost)
+adf.test(tuition.spl_resi)
+#adf.test(poly_resi)
+
+# select stationary residuals
+tuition.stat_resi = tuition.spl_resi
+```
+
+```{r Tuition TS model ARIMA model testing}
+# Fit ARMA
+suppressWarnings({final.aic = Inf; final.order = c(0, 0, 0); final.arma = NA
+for (p in 0:10) for (q in 0:10) {
+  current.aic = AIC(arima(tuition.stat_resi, order=c(p, 0, q))) 
+  if(current.aic < final.aic) {
+    final.aic = current.aic; final.order = c(p, 0, q)
+    final.arma = arima(tuition.stat_resi, order=final.order)
+  } 
+}
+cat("Selected Order (p q):", final.order)
+final.arma})
+```
+
+```{r Tuition TS model ARIMA testing}
+plot(final.arma$residuals, ylab="Residual Cost", main="ACF of ARIMA Residuals", xlab="Year")
+acf(final.arma$residuals, main="ACF of ARIMA Residuals", lag.max=60)
+pacf(final.arma$residuals, main="PACF of ARIMA Residuals", lag.max=60)
+
+adf.test(final.arma$residuals) # Null Hypothesis = There is a unit root (the time series is non stationary)
+Box.test(final.arma$residuals, lag = (6), type = "Box-Pierce", fitdf = (5)) # Null Hypothesis = There is no Serial Correlation
+Box.test(final.arma$residuals, lag = (6), type = "Ljung-Box", fitdf = (5)) # Null Hypothesis = There is no Serial Correlation
+shapiro.test(final.arma$residuals) # Null Hypothesis = The data is normally distributed
+
+qqPlot(final.arma$residuals, main="QQ Plot ARIMA Residuals", ylab="Sample Q", xlab="Theoretical Q")
+acf(final.arma$residuals**2, main = "ACF of Squared Residuals of Selected ARIMA", lag.max=60)
+
+Box.test(final.arma$residuals**2, lag = (6), type = "Box-Pierce", fitdf = (5)) # Null Hypothesis = There is no Serial Correlation
+Box.test(final.arma$residuals**2, lag = (6), type = "Ljung-Box", fitdf = (5)) # Null Hypothesis = There is no Serial Correlation
+```
+
+```{r Tuition TS model ARIMA-GARCH selection 1}
+# Fit using ARMA(2,3)
+final.aic = Inf
+final.order = c(0,0,0)
+
+for (m in 0:3){
+  for (n in 0:3){
+    tryCatch({
+      if (m+n > 0){
+        spec = ugarchspec(variance.model=list(garchOrder=c(m,n)),
+                                   mean.model=list(armaOrder=c(2,3),
+                                                   include.mean=F),
+                                   distribution.model="std")
+        fit = ugarchfit(spec, tuition.stat_resi, solver = 'hybrid')
+        current.aic = infocriteria(fit)[1]
+        print(c(m, 0, n, current.aic))
+      }
+      if (current.aic < final.aic) {
+        final.aic = current.aic
+        final.order = c(m, 0, n, final.aic)
+        }
+      }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  }
+}
+print('-----Final values-----')
+print(final.order)
+```
+
+```{r Tuition TS model ARIMA-GARCH selection 2}
+# Fit using GARCH(0,1)
+final.aic = Inf
+final.order = c(0,0,0)
+
+for (p in 0:7){
+  for (q in 0:7){
+    tryCatch({
+      spec = ugarchspec(variance.model=list(garchOrder=c(0,1)),
+                                 mean.model=list(armaOrder=c(p,q),
+                                                 include.mean=F),
+                                 distribution.model="std")
+      fit = ugarchfit(spec, tuition.stat_resi, solver = 'hybrid')
+      current.aic = infocriteria(fit)[1]
+      print(c(p, 0, q, current.aic))
+      if (current.aic < final.aic) {
+        final.aic = current.aic
+        final.order = c(p, 0, q, final.aic)
+        }
+      }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  }
+}
+print('-----Final values-----')
+print(final.order)
+```
+
+```{r Tuition TS model ARIMA-GARCH selection 3}
+# Fit using ARMA(0,7)
+final.aic = Inf
+final.order = c(0,0,0)
+
+for (m in 0:3){
+  for (n in 0:3){
+    tryCatch({
+      if (m+n > 0){
+        spec = ugarchspec(variance.model=list(garchOrder=c(m,n)),
+                                   mean.model=list(armaOrder=c(0,7),
+                                                   include.mean=F),
+                                   distribution.model="std")
+        fit = ugarchfit(spec, tuition.stat_resi, solver = 'hybrid')
+        current.aic = infocriteria(fit)[1]
+        print(c(m, 0, n, current.aic))
+      }
+      if (current.aic < final.aic) {
+        final.aic = current.aic
+        final.order = c(m, 0, n, final.aic)
+        }
+      }, error=function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  }
+}
+print('-----Final values-----')
+print(final.order)
+```
+
+```{r Tuition TS model ARIMA-GARCH selection 4}
+# Best: ARMA(0,7)-GARCH(0,1)
+
+spec = ugarchspec(variance.model=list(garchOrder=c(0,1)),
+                                   mean.model=list(armaOrder=c(0,7),
+                                                   include.mean=F),
+                                   distribution.model="std")
+arma.garch.fit = ugarchfit(spec, tuition.stat_resi, solver = 'hybrid')
+```
+
+```{r Tuition TS model ARIMA-GARCH model testing}
+arma.garch.fit.resid = arma.garch.fit@fit$residuals # normal residuals
+arma.garch.fit.resid.std = arma.garch.fit@fit$z # standardized residuals
+
+plot(arma.garch.fit.resid, ylab="Residual Cost", main="ACF of ARIMA-GARCH Residuals", xlab="Year", type='l')
+acf(arma.garch.fit.resid, main="ACF of ARIMA-GARCH Residuals", lag.max=60)
+pacf(arma.garch.fit.resid, main="PACF of ARIMA-GARCH Residuals", lag.max=60)
+
+adf.test(arma.garch.fit.resid.std) # Null Hypothesis = There is a unit root (the time series is non stationary)
+Box.test(arma.garch.fit.resid.std, lag = (8), type = "Box-Pierce", fitdf = (7)) # Null Hypothesis = There is no Serial Correlation
+Box.test(arma.garch.fit.resid.std, lag = (8), type = "Ljung-Box", fitdf = (7)) # Null Hypothesis = There is no Serial Correlation
+shapiro.test(arma.garch.fit.resid.std) # Null Hypothesis = The data is normally distributed
+
+qqPlot(arma.garch.fit.resid.std, ylab="Residual Cost", main="QQ Plot ARMA-GARCH Residuals", distribution = "t", df = 7)
+acf(arma.garch.fit.resid**2, main = "Squared Residuals of Selected ARMA-GARCH", lag.max=60)
+
+# Fit
+plot(arma.garch.fit.resid+tuition.stat_resi+ts(cost, start=1968), xlab="Year", ylab="Cost", main="Estimated Tuition: Splines and ARMA(0,7) - GARCH(0,1)", type='l', col="red")
+lines(ts(cost, start=1968), col="black", lty=3)
+legend(x = "bottomright", legend = c("Tuition", "Estimated Tuition"), fill=c("black", "red"))
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r VAR model Component TS}
+Inflation.ts = ts(US.Inflation.df$Inflation.Rate.As.Decimal, start=1960)
+GDP.Growth.ts = ts(GDP.Growth.df$GDP.Growth.As.Decimal, start=1961)
+Population.ts = ts(population.df$Population, start=1960)
+US.Inflation.df
+Starting.Salary.ts = ts(Starting.Salary.df$Reported.Average, start=1960)
+Total.Loans.ts = ts(Total.Loans$total, start=1958)
+Tuition.Cost.ts = ts(cost, start=1968)
+
+# Exogenous Variables
+ts.plot(Inflation.ts, ylab='Inflation Rate', xlab='Year', main='Inflation Rate', type="b", col='red', lwd=2)
+ts.plot(GDP.Growth.ts, ylab='GDP Growth Rate', xlab='Year', main='GDP Growth Rate', type="b", col='red', lwd=2)
+ts.plot(Population.ts, ylab='Total Population', xlab='Year', main='Total Population', type="b", col='red', lwd=2)
+
+# Endogenous Variables
+ts.plot(Starting.Salary.ts, ylab='Salary', xlab='Year', main='Reported Average Bachlor Degree Starting Salary', type="b", col='blue', lwd=2)
+ts.plot(Total.Loans.ts, ylab='Loans Debt in Billions', xlab='Year', main='Total Loan Debt', type="b", col='blue', lwd=2)
+ts.plot(Tuition.Cost.ts, xlab="Year", ylab="Cost", main="Tuition Time Series", type="b", col='blue', lwd=2)
+```
+
+```{r VAR model Component TS windowed (1968 to 2015)}
+Inflation = window(Inflation.ts, start=1968, end=2015) # 1968 to 2015
+GDP.Growth = window(GDP.Growth.ts, start=1968, end=2015) # 1968 to 2015
+Population = window(Population.ts, start=1968, end=2015) # 1968 to 2015
+
+Starting.Salary = window(Starting.Salary.ts, start=1968, end=2015) # 1968 to 2015
+Total.Loans = window(Total.Loans.ts, start=1968, end=2015) # 1968 to 2015
+Tuition.Cost = window(Tuition.Cost.ts, start=1968, end=2015) # 1968 to 2015
+
+# Exogenous Variables
+ts.plot(Inflation, ylab='Inflation Rate', xlab='Year', main='Inflation Rate', type="b", col='red', lwd=2)
+ts.plot(GDP.Growth, ylab='GDP Growth Rate', xlab='Year', main='GDP Growth Rate', type="b", col='red', lwd=2)
+ts.plot(Population, ylab='Total Population', xlab='Year', main='Total Population', type="b", col='red', lwd=2)
+
+# Endogenous Variables
+ts.plot(Starting.Salary, ylab='Salary', xlab='Year', main='Reported Average Bachlor Degree Starting Salary', type="b", col='blue', lwd=2)
+ts.plot(Total.Loans, ylab='Loans Debt in Billions', xlab='Year', main='Total Loan Debt', type="b", col='blue', lwd=2)
+ts.plot(Tuition.Cost, xlab="Year", ylab="Cost", main="Tuition Time Series", type="b", col='blue', lwd=2)
+
+#full.data.set = data.frame(Starting.Salary, Total.Loans, Tuition.Cost, Inflation, GDP.Growth, Population)
+#colnames(full.data.set) = c('Starting.Salary','Total.Loans','Tuition.Cost', 'Inflation', 'GDP.Growth', 'Population')
+#full.data.set = as.matrix(full.data.set)
+#full.data.set
+#acf(full.data.set, lag.max=30)
+```
+
+```{r Inflation Stationarity}
+time.pts = c(1:length(Inflation))
+time.pts = c(time.pts - min(time.pts))/max(time.pts)
+
+spl = gam(Inflation~s(time.pts))
+spl_fit = ts(fitted(spl), start=1968)
+spl_resi = Inflation - spl_fit
+spl_resi = ts(spl_resi, start=1968)
+
+ts.plot(Inflation)
+lines(spl_fit, col='blue')
+ts.plot(spl_resi, main='Inflation Residuals')
+acf(spl_resi, lag.max=50)
+pacf(spl_resi, lag.max=50)
+
+Inflation = spl_resi
+adf.test(Inflation)
+```
+
+
+```{r GDP Growth Stationarity}
+time.pts = c(1:length(GDP.Growth))
+time.pts = c(time.pts - min(time.pts))/max(time.pts)
+
+spl = gam(GDP.Growth~s(time.pts))
+spl_fit = ts(fitted(spl), start=1968)
+spl_resi = GDP.Growth - spl_fit
+spl_resi = ts(spl_resi, start=1968)
+
+ts.plot(GDP.Growth)
+lines(spl_fit, col='blue')
+ts.plot(spl_resi, main='GDP Growth Residuals')
+acf(spl_resi, lag.max=50)
+pacf(spl_resi, lag.max=50)
+
+GDP.Growth = spl_resi
+adf.test(GDP.Growth)
+```
+
+
+```{r Population Stationarity}
+time.pts = c(1:length(Population))
+time.pts = c(time.pts - min(time.pts))/max(time.pts)
+
+# Trend
+spl = gam(Population~s(time.pts))
+summary(spl)
+
+spl_fit = ts(fitted(spl), start=1968)
+ts.plot(Population)
+lines(spl_fit, col='blue')
+spl_resi = Population - spl_fit
+spl_resi = ts(spl_resi, start=1968, frequency=10)
+
+ts.plot(spl_resi, main='GDP Growth Residuals (Trend)')
+acf(spl_resi, lag.max=50)
+pacf(spl_resi, lag.max=50)
+
+#seasonality = c(sin(2*pi*time.pts/10), cos(2*pi*time.pts/10)) + sin(2*pi*time.pts/5) + cos(2*pi*time.pts/5)
+# Seasonality
+seasonal = lm(spl_resi~season(spl_resi))
+summary(seasonal)
+
+seasonal_fit = ts(fitted(seasonal), start=1968, frequency=10)
+ts.plot(spl_resi)
+lines(seasonal_fit, col='blue')
+seasonal_resi = spl_resi - seasonal_fit
+seasonal_resi = ts(seasonal_resi, start=1968)
+
+ts.plot(seasonal_resi, main='GDP Growth Residuals (Trend and Seasonality)')
+acf(seasonal_resi, lag.max=50)
+pacf(seasonal_resi, lag.max=50)
+
+Population = seasonal_resi
+
+adf.test(seasonal_resi)
+```
+
+
+```{r Starting Salary Stationarity}
+ts.plot(starting.salary.splines.diff.season.model.fit.diff, main='Log Average Starting Salary Residuals (Trend and Seasonality Removal)', ylab='Salary')
+acf(starting.salary.splines.diff.season.model.fit.diff, lag=60, main='ACF of Residuals (Trend and Seasonality Removal)')
+pacf(starting.salary.splines.diff.season.model.fit.diff, lag=60, main='PACF of Residuals (Trend and Seasonality Removal)')
+
+# SQUARED RESIDUAL ANALYSIS FOR HETEROSKEDASTICITY
+starting.salary.final.residuals = starting.salary.splines.diff.season.model.fit.diff
+acf(starting.salary.final.residuals^2, lag=60, main='ACF of Squared Residuals (Trend and Seasonality Removal)')
+
+Starting.Salary = window(starting.salary.final.residuals, start=1968, end=2015)
+ts.plot(Starting.Salary, main='Log Average Starting Salary Residuals (Trend and Seasonality Removal)')
+
+adf.test(Starting.Salary)
+```
+
+
+```{r Total Loans Stationarity}
+ts.plot(total.loans.splines.diff, main='Log Total Loan Residuals (Trend and Seasonality Removal)')
+acf(total.loans.splines.diff, lag=60)
+pacf(total.loans.splines.diff, lag=60)
+
+total.loans.final.residuals = total.loans.splines.diff
+acf(total.loans.final.residuals^2, lag=60, main='ACF of Squared Residuals (Trend and Seasonality Removal)')
+
+Total.Loans = window(total.loans.final.residuals, start=1968, end=2015)
+ts.plot(Total.Loans, main='Log Total Loan Residuals (Trend and Seasonality Removal)')
+
+adf.test(Total.Loans)
+```
+
+
+```{r Tuition Cost Stationarity}
+ts.plot(tuition.spl_resi, main="Tuition Splines Residual Plot", ylab="Residual Cost", xlab="Year")
+acf(tuition.spl_resi, lag.max=54, main="ACF of Tuition Splines Residuals")
+pacf(tuition.spl_resi, lag.max=54, main="PACF of Tuition Splines Residuals")
+
+acf(tuition.spl_resi^2, lag=60, main='ACF of Squared Residuals (Trend and Seasonality Removal)')
+
+Tuition = window(tuition.spl_resi, start=1968, end=2015)
+ts.plot(Tuition, main='Tuition Residuals (Trend and Seasonality Removal)')
+
+adf.test(Tuition)
+```
+
+
+
+```{r VAR model Component TS windowed (1968 to 2015) No Population}
+#time.pts = c(1:length(Starting.Salary))
+
+plot(acf(data.frame(Starting.Salary, Total.Loans, Tuition, GDP.Growth, Inflation), plot = F, lag.max=50))$criteria
+
+VARselect(cbind(Starting.Salary, Total.Loans, Tuition, GDP.Growth, Inflation))
+
+model.var = VAR(cbind(Starting.Salary, Total.Loans, Tuition.Cost, Inflation, GDP.Growth), p = 6, type = "const")
+model.var.restrict = restrict(model.var, thresh = qt(0.05/2,778))
+summary(model.var)
+
+plot(ts(residuals(model.var)), main = "Residual process of VAR")
+vars::arch.test(model.var) # Null Hypothesis = No Heteroskedasticity
+normality.test(model.var) # Null Hypothesis = Normality
+serial.test(model.var) # Null Hypothesis = No Serial Correlation
+
+plot(acf(residuals(model.var), plot = F, lag.max=50))
+
+BIC(model.var)
+```
+
+The VAR model Residuals shows evidence of No Heteroskedasticity, Normality, and Serial Correlation in the residuals.
+
+```{r Restricted VAR model Component TS windowed (1968 to 2015) No Population}
+summary(model.var.restrict)
+
+plot(ts(residuals(model.var.restrict)), main = "Residual process of Restricted VAR")
+vars::arch.test(model.var.restrict) # Null Hypothesis = No Heteroskedasticity
+normality.test(model.var.restrict) # Null Hypothesis = Normality
+serial.test(model.var.restrict) # Null Hypothesis = No Serial Correlation
+
+plot(acf(residuals(model.var.restrict), plot = F, lag.max=50))
+
+BIC(model.var.restrict)
+```
+
+The Restricted VAR model Residuals shows evidence of No Heteroskedasticity, Normality, and Serial Correlation in the residuals, but if taking into account the 0.01 p-value, our residuals may not be Serial Correlated.
+
+
+
+```{r VAR model Component TS windowed (1968 to 2015) Population Included}
+#time.pts = c(1:length(Starting.Salary))
+
+plot(acf(data.frame(Starting.Salary, Total.Loans, Tuition, GDP.Growth, Inflation, Population), plot = F, lag.max=50))
+
+VARselect(cbind(Starting.Salary, Total.Loans, Tuition, GDP.Growth, Inflation, Population))$criteria
+
+model.var = VAR(cbind(Starting.Salary, Total.Loans, Tuition.Cost, Inflation, GDP.Growth, Population), p = 5, type = "const")
+model.var.restrict = restrict(model.var, thresh = qt(0.05/2,778))
+summary(model.var)
+
+plot(ts(residuals(model.var)), main = "Residual process of VAR")
+vars::arch.test(model.var) # Null Hypothesis = No Heteroskedasticity
+normality.test(model.var) # Null Hypothesis = Normality
+serial.test(model.var) # Null Hypothesis = No Serial Correlation
+
+plot(acf(residuals(model.var), plot = F, lag.max=50))
+
+BIC(model.var)
+```
+
+The VAR model (including Population) Residuals shows evidence of No Heteroskedasticity, Normality, and Serial Correlation in the residuals.
+
+```{r Restricted VAR model Component TS windowed (1968 to 2015) Population Included}
+summary(model.var.restrict)
+
+plot(ts(residuals(model.var.restrict)), main = "Residual process of Restricted VAR")
+vars::arch.test(model.var.restrict) # Null Hypothesis = No Heteroskedasticity
+normality.test(model.var.restrict) # Null Hypothesis = Normality
+serial.test(model.var.restrict) # Null Hypothesis = No Serial Correlation
+
+plot(acf(residuals(model.var.restrict), plot = F, lag.max=50))
+
+BIC(model.var.restrict)
+```
+
+The Restricted VAR model (including Population) Residuals shows evidence of No Heteroskedasticity, Normality, and Serial Correlation in the residuals, but if taking into account the 0.01 p-value, our residuals may not be Serial Correlated.
+
+
+
+```{r VARX model Component TS windowed (1968 to 2015) Population Included}
+#time.pts = c(1:length(Starting.Salary))
+plot(acf(data.frame(Starting.Salary, Total.Loans, Tuition), plot = F, lag.max=50))
+
+exogen.ts = data.frame(Inflation, GDP.Growth, Population)
+
+VARselect(cbind(Starting.Salary, Total.Loans, Tuition.Cost), exogen=exogen.ts)$criteria
+
+model.varx = VAR(cbind(Starting.Salary, Total.Loans, Tuition.Cost), p = 10, exogen=exogen.ts, type = "both")
+model.varx.restrict = restrict(model.varx, thresh = qt(0.05/2,778))
+summary(model.varx)
+
+plot(ts(residuals(model.varx)), main = "Residual process of VAR")
+vars::arch.test(model.varx) # Null Hypothesis = No Heteroskedasticity
+normality.test(model.varx) # Null Hypothesis = Normality  
+serial.test(model.varx) # Null Hypothesis = No Serial Correlation
+
+plot(acf(residuals(model.varx), plot = F, lag.max=50))
+
+BIC(model.varx)
+```
+
+The VARX model Residuals shows evidence of Heteroskedasticity, Normality, and Serial Correlation in the residuals.
+
+```{r Restricted VARX model Component TS windowed (1968 to 2015) Population Included}
+summary(model.varx.restrict)
+
+plot(ts(residuals(model.varx.restrict)), main = "Residual process of VAR")
+vars::arch.test(model.varx.restrict) # Null Hypothesis = No Heteroskedasticity
+normality.test(model.varx.restrict) # Null Hypothesis = Normality  
+serial.test(model.varx.restrict) # Null Hypothesis = No Serial Correlation
+
+plot(acf(residuals(model.varx.restrict), plot = F, lag.max=50))
+
+BIC(model.varx.restrict)
+```
+
+The Restricted VARX model Residuals shows evidence of No Heteroskedasticity, Normality, and Serial Correlation in the residuals.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
